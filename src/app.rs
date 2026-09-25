@@ -5,10 +5,14 @@ mod central_panel;
 mod left_panel;
 mod right_panel;
 
+mod vault_storage;
+
 #[derive(Default)]
 pub struct App {
     left_panel: left_panel::LeftPanel,
     central_panel: central_panel::CentralPanel,
+
+    storage: vault_storage::Storage,
 }
 
 impl App {
@@ -16,6 +20,8 @@ impl App {
         Self {
             left_panel: left_panel::LeftPanel::default(),
             central_panel: central_panel::CentralPanel::default(),
+
+            storage: vault_storage::Storage::new(),
         }
     }
 
@@ -34,7 +40,13 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {}
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.storage.save();
+        }
+
+        // TODO: autosave every n seconds
+    }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.left_panel.show = self.central_panel.show_left_panel;
         self.left_panel.ui(ui);

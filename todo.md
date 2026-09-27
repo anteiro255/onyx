@@ -2,5 +2,10 @@
 
 #### Files
 
-- [ ] Add creating an untitled file/dir and enter renaming instead of opening a window "Create a file"
-- [ ] Add Ctrl+(X|C|V), Del, F2 support
+- Done
+
+#### Bookmarks
+
+- [ ] Add renaming on F2
+- [ ] Fix creating, moving deleting bookmarks and folders
+- [ ] Instead of saving all the bookmark nodes to `./.onyx_volume/bookmarks`, save them as fs to `./.onyx_volume/bookmarks/`, that is, sort of: `./.onyx_volume/bookmarks/<bookmark_folder1>/<bookmark_folder2>/<bookmark_name>.bookmark.ron`

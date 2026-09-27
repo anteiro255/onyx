@@ -1,10 +1,10 @@
-use crate::models::Bookmark;
+use crate::models::BookmarkNode;
 use serde::{Deserialize, Serialize};
 use std::{io, path::Path};
 
 #[derive(Serialize, Deserialize)]
 pub struct Storage {
-    bookmarks: Vec<Bookmark>,
+    pub bookmarks: Vec<BookmarkNode>,
 }
 
 use thiserror::Error;
@@ -35,8 +35,12 @@ impl Storage {
         self.save_to(crate::constants::VOLUME_STORAGE_FOLDER);
     }
     fn save_to(&self, path: impl AsRef<Path>) {
-        save(&self.bookmarks, path)
-            .map_err(|err| log::error!("Saving bookmarks to the volume storage error: {}", err));
+        if let Err(err) = save(
+            &self.bookmarks,
+            path.as_ref().join("bookmarks.ron").as_path(),
+        ) {
+            log::error!("Saving bookmarks to the volume storage error: {}", err)
+        };
     }
 }
 
@@ -53,8 +57,11 @@ fn load<T: serde::de::DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, Sto
 }
 
 fn save<T: serde::Serialize>(data: &T, path: impl AsRef<Path>) -> Result<(), StorageError> {
-    let content = ron::to_string(data)?;
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
+    let content = ron::to_string(data)?;
     std::fs::write(path, content)?;
     Ok(())
 }

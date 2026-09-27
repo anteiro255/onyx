@@ -1,5 +1,7 @@
 use eframe::egui;
 
+use crate::app::AppState;
+
 mod bookmarks;
 mod files;
 mod search;
@@ -49,13 +51,13 @@ pub struct LeftPanel {
     tabs: Tabs,
 }
 impl LeftPanel {
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
         egui::Panel::left("left_panel")
             .resizable(true)
             .show_collapsible(ui, &mut self.show, |ui| {
                 self.tabs.ui(ui);
                 match self.tabs.selected {
-                    Tab::Bookmarks => self.tabs.bookmarks_tab.ui(ui),
+                    Tab::Bookmarks => self.tabs.bookmarks_tab.ui(ui, state),
                     Tab::Files => self.tabs.files_tab.ui(ui),
                     Tab::Search => self.tabs.search_tab.ui(ui),
                 }

@@ -44,17 +44,22 @@ pub trait BookmarkFSExt {
 
     /// Retrieves a reference to the parent `Bookmark` (which must be a `Folder`) for the given path.
     fn get_parent_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode>;
+
+    /// Removes and returns the bookmark node at `path`, or `None` if it doesn't exist.
+    fn remove_by_path(&mut self, path: &Path) -> Option<BookmarkNode>;
+
+    /// Moves the node at `from` into the folder at `to_dir` (the root if `to_dir` is the root path).
+    /// Returns `false` if `from` doesn't exist, `to_dir` isn't a folder, or `to_dir` is inside `from`.
+    fn move_to(&mut self, from: &Path, to_dir: &Path) -> bool;
+
+    /// Inserts `node` into the folder at `dir` (the root if `dir` is the root path).
+    /// Returns `false` if the target folder doesn't exist.
+    fn insert_into(&mut self, dir: &Path, node: BookmarkNode) -> bool;
 }
 
 impl BookmarkFSExt for BookmarkFS {
     fn get_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode> {
-        let components: Vec<_> = path
-            .components()
-            .filter_map(|c| match c {
-                Component::Normal(os_str) => os_str.to_str(),
-                _ => None,
-            })
-            .collect();
+        let components = components_of(path);
 
         if components.is_empty() {
             return None;
@@ -93,5 +98,84 @@ impl BookmarkFSExt for BookmarkFS {
             folder @ BookmarkNode::Folder { .. } => Some(folder),
             BookmarkNode::Note { .. } => None,
         }
+    }
+    fn remove_by_path(&mut self, path: &Path) -> Option<BookmarkNode> {
+        let components = components_of(path);
+
+        if components.is_empty() {
+            return None;
+        }
+
+        let mut current = self;
+        for (i, segment) in components.iter().enumerate() {
+            let idx = current.iter().position(|item| item.name() == *segment);
+            if let Some(idx) = idx {
+                if i == components.len() - 1 {
+                    return Some(current.remove(idx));
+                }
+                let folder = &mut current[idx];
+                if let BookmarkNode::Folder { content, .. } = folder {
+                    current = content;
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+        None
+    }
+    fn move_to(&mut self, from: &Path, to_dir: &Path) -> bool {
+        if to_dir == from || to_dir.starts_with(from) {
+            return false;
+        }
+        // Validate the target folder before removing the source so a failed
+        // move never loses a node.
+        if !is_folder(self, to_dir) {
+            return false;
+        }
+        let Some(node) = self.remove_by_path(from) else {
+            return false;
+        };
+        self.insert_into(to_dir, node)
+    }
+    fn insert_into(&mut self, dir: &Path, node: BookmarkNode) -> bool {
+        let mut current = self;
+        for segment in components_of(dir) {
+            let idx = current.iter().position(|item| item.name() == segment);
+            if let Some(idx) = idx {
+                let folder = &mut current[idx];
+                if let BookmarkNode::Folder { content, .. } = folder {
+                    current = content;
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        current.push(node);
+        true
+    }
+}
+
+/// Splits `path` into its normal components (the root, `.` and `..` are skipped).
+fn components_of(path: &Path) -> Vec<&str> {
+    path.components()
+        .filter_map(|c| match c {
+            Component::Normal(os_str) => os_str.to_str(),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Returns `true` if `path` refers to a folder bookmark (or is the root path).
+fn is_folder(root: &mut BookmarkFS, path: &Path) -> bool {
+    if components_of(path).is_empty() {
+        return true;
+    }
+    match root.get_by_path(path) {
+        Some(BookmarkNode::Folder { .. }) => true,
+        _ => false,
     }
 }

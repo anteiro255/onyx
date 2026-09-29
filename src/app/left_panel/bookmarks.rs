@@ -2,17 +2,21 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use egui_ltreeview::{NodeBuilder, TreeView, TreeViewBuilder};
+use egui_ltreeview::{DirPosition, DragAndDrop, NodeBuilder, TreeView, TreeViewBuilder};
 
 use crate::{
     app::AppState,
     models::{BookmarkFS, BookmarkFSExt, BookmarkNode},
 };
 
+mod action_buffer;
+mod renaming;
+
 /// A context-menu click, applied after the tree view has finished rendering.
 /// Deferring these lets the tree-view callbacks avoid capturing `self` mutably.
 /// All the paths are synthetic, that is, they're not real fs paths, they are bookmarks pseudo fs paths
 enum ContextMenuAction {
+    Open(PathBuf),
     Rename(PathBuf),
     Delete(PathBuf),
     /// Create a note bookmark inside the folder at this (synthetic) path.
@@ -56,92 +60,54 @@ impl CreateDialog {
     }
 }
 
-struct Renaming {
-    /// Synthetic path of the bookmark being renamed inline.
-    path: PathBuf,
-    buf: String,
-    is_to_commit: bool,
-    is_to_focus: bool,
-}
-impl Renaming {
-    fn start(path: &Path) -> Self {
-        Self {
-            path: path.to_owned(),
-            buf: path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            is_to_commit: false,
-            is_to_focus: true,
-        }
-    }
-    fn ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut self.buf)
-                .desired_width(150.0)
-                .id(ui.make_persistent_id("bookmark_rename")),
-        );
-        if self.is_to_focus {
-            response.request_focus();
-            self.is_to_focus = false;
-        }
-        response
-    }
-    fn commit(self, root: &mut BookmarkFS) {
-        let Some(bookmark_node) = root.get_by_path(self.path.as_path()) else {
-            log::error!(
-                "Can't get the {} bookmark in the bookmarks pseudo fs to rename",
-                self.path
-                    .to_str()
-                    .unwrap_or("<unable to convert the path to a string>")
-            );
-            return;
-        };
-        bookmark_node.set_name(self.buf);
-    }
-}
-
 #[derive(Default)]
 pub struct Bookmarks {
     /// Synthetic path pending a delete confirmation dialog.
     confirm_delete: Option<PathBuf>,
-    renaming: Option<Renaming>,
+    renaming: Option<renaming::Renaming>,
     /// State of the create dialog, if open.
     create: Option<CreateDialog>,
+
+    action_buffer: action_buffer::ActionBuffer,
+
+    // Vector of selected pseudo fs paths
+    selection: Vec<PathBuf>,
+
+    // Pseudo bookmark fs path
+    to_open: Option<PathBuf>,
 }
 impl Bookmarks {
     pub fn ui(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
-        ui.vertical(|ui| {
-            ui.style_mut().interaction.selectable_labels = false;
-            // Placeholder: the real id is generated inside the scroll area (it depends
-            // on the child ui's id) and captured out via `mut` for the focus check below.
-            let mut tree_id = egui::Id::new("");
-            egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
-                    tree_id = ui.make_persistent_id("bookmarks_tree_view");
-                    // Context-menu clicks are recorded as deferred actions and applied
-                    // after the tree view has rendered, so the callbacks don't need to
-                    // capture `self` mutably (which would conflict with `draw_bookmark`).
-                    let menu_actions: RefCell<Option<ContextMenuAction>> = RefCell::new(None);
-                    let (_response, _actions) = TreeView::new(tree_id)
-                        .allow_drag_and_drop(true)
-                        .fallback_context_menu(|ui, _| {
-                            root_context_menu(ui, &menu_actions);
-                        })
-                        .show(ui, |builder| {
-                            for bookmark in &state.storage.bookmarks {
-                                self.draw_bookmark(
-                                    builder,
-                                    &bookmark,
-                                    PathBuf::from("/"),
-                                    &menu_actions,
-                                );
-                            }
-                        });
-                    self.handle_menu_actions(&menu_actions);
-                });
-        });
+        ui.style_mut().interaction.selectable_labels = false;
+        // Placeholder: the real id is generated inside the scroll area (it depends
+        // on the child ui's id) and captured out via `mut` for the focus check below.
+        let mut tree_id = egui::Id::new("");
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                tree_id = ui.make_persistent_id("bookmarks_tree_view");
+                // Context-menu clicks are recorded as deferred actions and applied
+                // after the tree view has rendered, so the callbacks don't need to
+                // capture `self` mutably (which would conflict with `draw_bookmark`).
+                let menu_actions: RefCell<Option<ContextMenuAction>> = RefCell::new(None);
+                let (_response, actions) = TreeView::new(tree_id)
+                    .allow_drag_and_drop(true)
+                    .fallback_context_menu(|ui, _| {
+                        root_context_menu(ui, &menu_actions);
+                    })
+                    .show(ui, |builder| {
+                        for bookmark in &state.storage.bookmarks {
+                            self.draw_bookmark(
+                                builder,
+                                &bookmark,
+                                PathBuf::from("/"),
+                                &menu_actions,
+                            );
+                        }
+                    });
+                self.handle_actions(&mut state.storage.bookmarks, actions);
+                self.handle_menu_actions(&menu_actions);
+            });
         if self.renaming.as_ref().is_some_and(|r| r.is_to_commit)
             && let Some(renaming) = self.renaming.take()
         {
@@ -149,6 +115,7 @@ impl Bookmarks {
         }
         self.show_delete_confirmation(ui.ctx(), &mut state.storage.bookmarks);
         self.show_create_dialog(ui.ctx(), &mut state.storage.bookmarks);
+        self.handle_shortcuts(ui, tree_id);
     }
 
     fn draw_bookmark(
@@ -171,7 +138,12 @@ impl Bookmarks {
                             self.node_label(ui, note_bookmark_fs_path.clone(), name.clone());
                         })
                         .context_menu(|ui| {
-                            node_menu(ui, &note_bookmark_fs_path, false, menu_actions);
+                            node_context_menu(
+                                ui,
+                                note_bookmark_fs_path.as_path(),
+                                false,
+                                menu_actions,
+                            );
                         }),
                 );
             }
@@ -187,7 +159,12 @@ impl Bookmarks {
                             self.node_label(ui, folder_bookmark_fs_path.clone(), name.clone());
                         })
                         .context_menu(|ui| {
-                            node_menu(ui, &folder_bookmark_fs_path, true, menu_actions);
+                            node_context_menu(
+                                ui,
+                                folder_bookmark_fs_path.as_path(),
+                                true,
+                                menu_actions,
+                            );
                         }),
                 );
 
@@ -253,7 +230,7 @@ impl Bookmarks {
 
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if delete_response.clicked() || enter {
-                        remove_bookmark(bookmarks, path.as_path());
+                        bookmarks.remove_by_path(path.as_path());
                         completed = true;
                     }
                     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
@@ -337,8 +314,9 @@ impl Bookmarks {
     fn handle_menu_actions(&mut self, actions: &RefCell<Option<ContextMenuAction>>) {
         if let Some(action) = &*actions.borrow() {
             match action {
+                ContextMenuAction::Open(path) => self.open(path.clone()),
                 ContextMenuAction::Rename(path) => {
-                    self.renaming = Some(Renaming::start(path.as_path()))
+                    self.renaming = Some(renaming::Renaming::start(path.as_path()))
                 }
                 ContextMenuAction::Delete(path) => self.confirm_delete = Some(path.clone()),
                 ContextMenuAction::AddBookmark(parent) => {
@@ -350,36 +328,97 @@ impl Bookmarks {
             }
         }
     }
+
+    /// Handle keyboard shortcuts: Ctrl+Z undo, F2 rename, Del delete.
+    fn handle_shortcuts(&mut self, ui: &mut egui::Ui, tree_id: egui::Id) {
+        if self.confirm_delete.is_some() {
+            return;
+        }
+        // Only act when the tree itself has focus, so we don't hijack shortcuts
+        // meant for other widgets (e.g. a text editor in the central panel).
+        if !ui.memory(|m| m.has_focus(tree_id)) {
+            return;
+        }
+        let modifiers = ui.input(|i| i.modifiers);
+        let command = modifiers.command_only();
+
+        if command && ui.input(|i| i.key_pressed(egui::Key::Z)) {
+            self.action_buffer.undo();
+        } else if ui.input(|i| i.key_pressed(egui::Key::F2)) {
+            if let Some(sel) = self.selection.last() {
+                let path = sel.clone();
+                self.renaming = Some(renaming::Renaming::start(path.as_path()));
+            }
+        } else if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
+            if let Some(sel) = self.selection.last() {
+                self.confirm_delete = Some(sel.clone());
+            }
+        }
+    }
+
+    fn handle_actions(
+        &mut self,
+        bookmarks: &mut BookmarkFS,
+        actions: Vec<egui_ltreeview::Action<PathBuf>>,
+    ) {
+        for action in actions {
+            match action {
+                egui_ltreeview::Action::Activate(activate) => {
+                    for path in activate.selected {
+                        self.open(path);
+                    }
+                }
+                egui_ltreeview::Action::Move(dnd) => move_dropped(bookmarks, &dnd),
+                egui_ltreeview::Action::MoveExternal(dnd) => {
+                    // Dropped outside any node (empty space) -> move to root.
+                    move_to_dir(bookmarks, &dnd.source, Path::new("/"));
+                }
+                egui_ltreeview::Action::SetSelected(selection) => {
+                    self.selection = selection;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Open a bookmark by pseudo bookmark fs path
+    fn open(&mut self, path: PathBuf) {
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            self.to_open = Some(path);
+        } else {
+            let _ = opener::open(path);
+        }
+    }
 }
 
 /// Render the context menu for a node. A click is recorded as a deferred
-/// [`MenuAction`] and applied by [`Bookmarks::handle_menu_actions`] after the
+/// [`ContextMenuAction`] and applied by [`Bookmarks::handle_menu_actions`] after the
 /// tree view has finished rendering.
-fn node_menu(
+fn node_context_menu(
     ui: &mut egui::Ui,
-    path: &PathBuf,
+    path: &Path,
     is_dir: bool,
     actions: &RefCell<Option<ContextMenuAction>>,
 ) {
     if ui.button("Open").clicked() {
+        actions.replace_with(|_| Some(ContextMenuAction::Open(path.to_path_buf())));
         ui.close();
-    }
-    if ui.button("Rename").clicked() {
-        actions.replace_with(|_| Some(ContextMenuAction::Rename(path.clone())));
+    } else if ui.button("Rename").clicked() {
+        actions.replace_with(|_| Some(ContextMenuAction::Rename(path.to_path_buf())));
         ui.close();
-    }
-    if ui.button("Delete").clicked() {
-        actions.replace_with(|_| Some(ContextMenuAction::Delete(path.clone())));
+    } else if ui.button("Delete").clicked() {
+        actions.replace_with(|_| Some(ContextMenuAction::Delete(path.to_path_buf())));
         ui.close();
-    }
-    if is_dir {
+    } else if is_dir {
         ui.separator();
         if ui.button("Add a bookmark").clicked() {
-            actions.replace_with(|_| Some(ContextMenuAction::AddBookmark(path.clone())));
+            actions.replace_with(|_| Some(ContextMenuAction::AddBookmark(path.to_path_buf())));
             ui.close();
-        }
-        if ui.button("Create a folder").clicked() {
-            actions.replace_with(|_| Some(ContextMenuAction::CreateFolder(path.clone())));
+        } else if ui.button("Create a folder").clicked() {
+            actions.replace_with(|_| Some(ContextMenuAction::CreateFolder(path.to_path_buf())));
             ui.close();
         }
     }
@@ -397,49 +436,33 @@ fn root_context_menu(ui: &mut egui::Ui, actions: &RefCell<Option<ContextMenuActi
     }
 }
 
-/// The display name of a bookmark.
-fn bookmark_name(bookmark: &BookmarkNode) -> &str {
-    match bookmark {
-        BookmarkNode::Note { name, .. } => name.as_str(),
-        BookmarkNode::Folder { name, .. } => name.as_str(),
-    }
+/// Move the dragged nodes to the drop target folder.
+///
+/// Dropping onto a folder (First/Last) moves into it; dropping before/after a
+/// node moves into that node's parent folder.
+fn move_dropped(bookmarks: &mut BookmarkFS, dnd: &DragAndDrop<PathBuf>) {
+    let target_dir = match &dnd.position {
+        DirPosition::First | DirPosition::Last => dnd.target.clone(),
+        DirPosition::After(_) | DirPosition::Before(_) => dnd
+            .target
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default(),
+    };
+    move_to_dir(bookmarks, &dnd.source, &target_dir);
 }
 
-/// Remove the bookmark at the synthetic `path` from `bookmarks`.
-fn remove_bookmark(bookmarks: &mut Vec<BookmarkNode>, path: &Path) {
-    let components: Vec<String> = path
-        .iter()
-        .map(|c| c.to_string_lossy().into_owned())
-        .collect();
-    if !components.is_empty() {
-        remove_bookmark_rec(bookmarks, &components, 0);
+/// Move a set of nodes into `target_dir`.
+fn move_to_dir(bookmarks: &mut BookmarkFS, source: &Vec<PathBuf>, target_dir: &Path) {
+    for src in source {
+        let _ = bookmarks.move_to(src.as_path(), target_dir);
     }
-}
-
-fn remove_bookmark_rec(
-    bookmarks: &mut Vec<BookmarkNode>,
-    components: &Vec<String>,
-    depth: usize,
-) -> bool {
-    let name = &components[depth];
-    let idx = bookmarks.iter().position(|b| name == bookmark_name(b));
-    if let Some(idx) = idx {
-        if depth + 1 == components.len() {
-            bookmarks.remove(idx);
-            return true;
-        }
-        let folder = &mut bookmarks[idx];
-        if let BookmarkNode::Folder { content, .. } = folder {
-            return remove_bookmark_rec(content, components, depth + 1);
-        }
-    }
-    false
 }
 
 /// Add a note bookmark to the folder at the synthetic `parent` path.
-fn add_note(bookmarks: &mut Vec<BookmarkNode>, parent: &Path, name: &String, path: &String) {
+fn add_note(root: &mut BookmarkFS, parent: &Path, name: &String, path: &String) {
     add_bookmark(
-        bookmarks,
+        root,
         parent,
         BookmarkNode::Note {
             path: PathBuf::from(path.as_str()),
@@ -449,9 +472,9 @@ fn add_note(bookmarks: &mut Vec<BookmarkNode>, parent: &Path, name: &String, pat
 }
 
 /// Add a folder bookmark to the folder at the synthetic `parent` path.
-fn add_folder(bookmarks: &mut Vec<BookmarkNode>, parent: &Path, name: &String) {
+fn add_folder(root: &mut BookmarkFS, parent: &Path, name: &String) {
     add_bookmark(
-        bookmarks,
+        root,
         parent,
         BookmarkNode::Folder {
             name: name.clone(),
@@ -462,27 +485,6 @@ fn add_folder(bookmarks: &mut Vec<BookmarkNode>, parent: &Path, name: &String) {
 
 /// Add `bookmark` to the folder at the synthetic `parent` path (or the root if
 /// `parent` is the root path). Does nothing if the parent folder is not found.
-fn add_bookmark(bookmarks: &mut Vec<BookmarkNode>, parent: &Path, bookmark: BookmarkNode) {
-    if parent.iter().next().is_none() {
-        bookmarks.push(bookmark);
-        return;
-    }
-    let mut current = bookmarks;
-    for component in parent.iter() {
-        let name = component.to_string_lossy().into_owned();
-        let idx = current
-            .iter()
-            .position(|b| name.as_str() == bookmark_name(b));
-        if let Some(idx) = idx {
-            let folder = &mut current[idx];
-            if let BookmarkNode::Folder { content, .. } = folder {
-                current = content;
-            } else {
-                return;
-            }
-        } else {
-            return;
-        }
-    }
-    current.push(bookmark);
+fn add_bookmark(bookmarks: &mut BookmarkFS, parent: &Path, bookmark: BookmarkNode) {
+    bookmarks.insert_into(parent, bookmark);
 }

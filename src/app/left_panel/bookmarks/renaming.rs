@@ -37,7 +37,7 @@ impl Renaming {
         response
     }
     pub fn commit(self, root: &mut BookmarkFS) {
-        let Some(bookmark_node) = root.get_by_path(self.path.as_path()) else {
+        let Some(bookmark_node) = root.get_mut_by_path(self.path.as_path()) else {
             log::error!(
                 "Can't get the {} bookmark in the bookmarks pseudo fs to rename",
                 self.path

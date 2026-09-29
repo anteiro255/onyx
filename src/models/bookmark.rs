@@ -39,11 +39,17 @@ impl BookmarkNode {
 }
 
 pub trait BookmarkFSExt {
+    /// Recursively retrieves a mutable reference to a `Bookmark` by traversing the given relative path.
+    fn get_mut_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode>;
+
     /// Recursively retrieves a reference to a `Bookmark` by traversing the given relative path.
-    fn get_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode>;
+    fn get_by_path(&self, path: &Path) -> Option<&BookmarkNode>;
+
+    /// Retrieves a mutable reference to the parent `Bookmark` (which must be a `Folder`) for the given path.
+    fn get_mut_parent_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode>;
 
     /// Retrieves a reference to the parent `Bookmark` (which must be a `Folder`) for the given path.
-    fn get_parent_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode>;
+    fn get_parent_by_path(&self, path: &Path) -> Option<&BookmarkNode>;
 
     /// Removes and returns the bookmark node at `path`, or `None` if it doesn't exist.
     fn remove_by_path(&mut self, path: &Path) -> Option<BookmarkNode>;
@@ -58,7 +64,7 @@ pub trait BookmarkFSExt {
 }
 
 impl BookmarkFSExt for BookmarkFS {
-    fn get_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode> {
+    fn get_mut_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode> {
         let components = components_of(path);
 
         if components.is_empty() {
@@ -84,7 +90,35 @@ impl BookmarkFSExt for BookmarkFS {
 
         None
     }
-    fn get_parent_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode> {
+
+    fn get_by_path(&self, path: &Path) -> Option<&BookmarkNode> {
+        let components = components_of(path);
+
+        if components.is_empty() {
+            return None;
+        }
+
+        let mut current_fs = self;
+
+        for (i, segment) in components.iter().enumerate() {
+            let found = current_fs.iter().find(|item| item.name() == *segment)?;
+
+            if i == components.len() - 1 {
+                return Some(found);
+            }
+
+            match found {
+                BookmarkNode::Folder { content, .. } => {
+                    current_fs = content;
+                }
+                BookmarkNode::Note { .. } => return None,
+            }
+        }
+
+        None
+    }
+
+    fn get_mut_parent_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode> {
         let parent_path = path.parent()?;
 
         // If path has no parent component (e.g. "file.txt"), the parent is the root vector itself,
@@ -93,12 +127,17 @@ impl BookmarkFSExt for BookmarkFS {
             return None;
         }
 
-        let parent = self.get_by_path(parent_path)?;
+        let parent = self.get_mut_by_path(parent_path)?;
         match parent {
             folder @ BookmarkNode::Folder { .. } => Some(folder),
             BookmarkNode::Note { .. } => None,
         }
     }
+
+    fn get_parent_by_path(&self, path: &Path) -> Option<&BookmarkNode> {
+        todo!();
+    }
+
     fn remove_by_path(&mut self, path: &Path) -> Option<BookmarkNode> {
         let components = components_of(path);
 
@@ -174,7 +213,7 @@ fn is_folder(root: &mut BookmarkFS, path: &Path) -> bool {
     if components_of(path).is_empty() {
         return true;
     }
-    match root.get_by_path(path) {
+    match root.get_mut_by_path(path) {
         Some(BookmarkNode::Folder { .. }) => true,
         _ => false,
     }

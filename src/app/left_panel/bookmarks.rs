@@ -106,7 +106,7 @@ impl Bookmarks {
                         }
                     });
                 self.handle_actions(&mut state.storage.bookmarks, actions);
-                self.handle_menu_actions(&menu_actions);
+                self.handle_menu_actions(&mut state.storage.bookmarks, &menu_actions);
             });
         if self.renaming.as_ref().is_some_and(|r| r.is_to_commit)
             && let Some(renaming) = self.renaming.take()
@@ -311,10 +311,14 @@ impl Bookmarks {
     }
 
     /// Apply the context-menu action that was deferred while the tree view rendered.
-    fn handle_menu_actions(&mut self, actions: &RefCell<Option<ContextMenuAction>>) {
+    fn handle_menu_actions(
+        &mut self,
+        bookmarks_root: &mut BookmarkFS,
+        actions: &RefCell<Option<ContextMenuAction>>,
+    ) {
         if let Some(action) = &*actions.borrow() {
             match action {
-                ContextMenuAction::Open(path) => self.open(path.clone()),
+                ContextMenuAction::Open(path) => self.open(bookmarks_root, path),
                 ContextMenuAction::Rename(path) => {
                     self.renaming = Some(renaming::Renaming::start(path.as_path()))
                 }
@@ -358,20 +362,20 @@ impl Bookmarks {
 
     fn handle_actions(
         &mut self,
-        bookmarks: &mut BookmarkFS,
+        bookmarks_root: &mut BookmarkFS,
         actions: Vec<egui_ltreeview::Action<PathBuf>>,
     ) {
         for action in actions {
             match action {
                 egui_ltreeview::Action::Activate(activate) => {
                     for path in activate.selected {
-                        self.open(path);
+                        self.open(bookmarks_root, path.as_ref());
                     }
                 }
-                egui_ltreeview::Action::Move(dnd) => move_dropped(bookmarks, &dnd),
+                egui_ltreeview::Action::Move(dnd) => move_dropped(bookmarks_root, &dnd),
                 egui_ltreeview::Action::MoveExternal(dnd) => {
                     // Dropped outside any node (empty space) -> move to root.
-                    move_to_dir(bookmarks, &dnd.source, Path::new("/"));
+                    move_to_dir(bookmarks_root, &dnd.source, Path::new("/"));
                 }
                 egui_ltreeview::Action::SetSelected(selection) => {
                     self.selection = selection;
@@ -382,14 +386,26 @@ impl Bookmarks {
     }
 
     /// Open a bookmark by pseudo bookmark fs path
-    fn open(&mut self, path: PathBuf) {
-        if path
+    fn open(&mut self, bookmarks_root: &BookmarkFS, bookmark_path: &Path) {
+        let file_path = match bookmarks_root.get_by_path(bookmark_path) {
+            Some(BookmarkNode::Note { path, .. }) => path,
+            _ => {
+                log::error!(
+                    "There's non a bookmark with bookmark fs path={}",
+                    bookmark_path
+                        .to_str()
+                        .unwrap_or("<cannot the path convert to a string>")
+                );
+                return;
+            }
+        };
+        if bookmark_path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
         {
-            self.to_open = Some(path);
+            self.to_open = Some(file_path.clone());
         } else {
-            let _ = opener::open(path);
+            let _ = opener::open(file_path);
         }
     }
 }

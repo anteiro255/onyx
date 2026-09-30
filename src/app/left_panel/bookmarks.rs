@@ -17,6 +17,7 @@ mod renaming;
 /// All the paths are synthetic, that is, they're not real fs paths, they are bookmarks pseudo fs paths
 enum ContextMenuAction {
     Open(PathBuf),
+    Edit(PathBuf),
     Rename(PathBuf),
     Delete(PathBuf),
     /// Create a note bookmark inside the folder at this (synthetic) path.
@@ -40,6 +41,9 @@ struct CreateDialog {
     parent_path: PathBuf,
     /// The real path of the note file (only used for [`CreateKind::Note`]).
     path: String,
+
+    /// Synthetic path of the note being edited, if this dialog edits an existing note.
+    editing: Option<PathBuf>,
 }
 impl CreateDialog {
     fn note(parent_path: PathBuf) -> Self {
@@ -48,6 +52,7 @@ impl CreateDialog {
             parent_path,
             name: String::new(),
             path: String::new(),
+            editing: None,
         }
     }
     fn folder(parent_path: PathBuf) -> Self {
@@ -56,6 +61,17 @@ impl CreateDialog {
             parent_path,
             name: String::new(),
             path: String::new(),
+            editing: None,
+        }
+    }
+    /// A dialog that edits the note at the synthetic `path` instead of creating a new one.
+    fn edit_note(path: PathBuf, name: String, note_path: String) -> Self {
+        Self {
+            kind: CreateKind::Note,
+            parent_path: path.parent().map(|p| p.to_path_buf()).unwrap_or_default(),
+            name,
+            path: note_path,
+            editing: Some(path),
         }
     }
 }
@@ -250,9 +266,13 @@ impl Bookmarks {
         let Some(create) = self.create.take() else {
             return;
         };
-        let title = match &create.kind {
-            CreateKind::Note => "Add a bookmark",
-            CreateKind::Folder => "Create a folder",
+        let title = if create.editing.is_some() {
+            "Edit bookmark"
+        } else {
+            match &create.kind {
+                CreateKind::Note => "Add a bookmark",
+                CreateKind::Folder => "Create a folder",
+            }
         };
         let mut create = Some(create);
         let mut open = true;
@@ -279,20 +299,31 @@ impl Bookmarks {
                     }
                 }
                 ui.horizontal(|ui| {
-                    let ok_response = ui.button("Create");
+                    let is_editing = create.editing.is_some();
+                    let ok_response = ui.button(match is_editing {
+                        true => "Save",
+                        false => "Create",
+                    });
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if ok_response.clicked() || enter {
                         let name = create.name.trim().to_string();
                         if !name.is_empty() {
-                            match create.kind {
-                                CreateKind::Note => {
-                                    let path = create.path.trim().to_string();
-                                    if !path.is_empty() {
-                                        add_note(bookmarks, &create.parent_path, &name, &path);
-                                    }
+                            if let Some(editing) = create.editing.as_ref() {
+                                let path = create.path.trim().to_string();
+                                if !path.is_empty() {
+                                    update_note(bookmarks, editing.as_path(), &name, &path);
                                 }
-                                CreateKind::Folder => {
-                                    add_folder(bookmarks, &create.parent_path, &name);
+                            } else {
+                                match create.kind {
+                                    CreateKind::Note => {
+                                        let path = create.path.trim().to_string();
+                                        if !path.is_empty() {
+                                            add_note(bookmarks, &create.parent_path, &name, &path);
+                                        }
+                                    }
+                                    CreateKind::Folder => {
+                                        add_folder(bookmarks, &create.parent_path, &name);
+                                    }
                                 }
                             }
                         }
@@ -319,6 +350,24 @@ impl Bookmarks {
         if let Some(action) = &*actions.borrow() {
             match action {
                 ContextMenuAction::Open(path) => self.open(bookmarks_root, path),
+                ContextMenuAction::Edit(path) => {
+                    let Some(note) = bookmarks_root.get_by_path(path.as_path()) else {
+                        return;
+                    };
+                    match note {
+                        BookmarkNode::Note {
+                            path: note_path,
+                            name,
+                        } => {
+                            self.create = Some(CreateDialog::edit_note(
+                                path.clone(),
+                                name.clone(),
+                                note_path.to_string_lossy().into_owned(),
+                            ));
+                        }
+                        BookmarkNode::Folder { .. } => {}
+                    }
+                }
                 ContextMenuAction::Rename(path) => {
                     self.renaming = Some(renaming::Renaming::start(path.as_path()))
                 }
@@ -422,6 +471,9 @@ fn node_context_menu(
     if ui.button("Open").clicked() {
         actions.replace_with(|_| Some(ContextMenuAction::Open(path.to_path_buf())));
         ui.close();
+    } else if !is_dir && ui.button("Edit").clicked() {
+        actions.replace_with(|_| Some(ContextMenuAction::Edit(path.to_path_buf())));
+        ui.close();
     } else if ui.button("Rename").clicked() {
         actions.replace_with(|_| Some(ContextMenuAction::Rename(path.to_path_buf())));
         ui.close();
@@ -497,6 +549,24 @@ fn add_folder(root: &mut BookmarkFS, parent: &Path, name: &String) {
             content: vec![],
         },
     );
+}
+
+/// Update the note at the synthetic `path` with the new `name` and real `path`.
+/// Does nothing if the note no longer exists.
+fn update_note(bookmarks: &mut BookmarkFS, path: &Path, name: &String, note_path: &String) {
+    let Some(note) = bookmarks.get_mut_by_path(path) else {
+        return;
+    };
+    match note {
+        BookmarkNode::Note {
+            path,
+            name: note_name,
+        } => {
+            *path = PathBuf::from(note_path.as_str());
+            *note_name = name.clone();
+        }
+        BookmarkNode::Folder { .. } => {}
+    }
 }
 
 /// Add `bookmark` to the folder at the synthetic `parent` path (or the root if

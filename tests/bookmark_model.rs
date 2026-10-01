@@ -38,37 +38,37 @@ fn sample() -> BookmarkFS {
 fn test_get_by_path() {
     let mut root = sample();
 
-    assert!(root.get_mut_by_path(Path::new("/a")).is_some());
-    assert!(root.get_mut_by_path(Path::new("/f/b")).is_some());
-    assert!(root.get_mut_by_path(Path::new("/f/g/c")).is_some());
-    assert!(root.get_mut_by_path(Path::new("/nope")).is_none());
+    assert!(root.get_mut_bookmark(Path::new("/a")).is_some());
+    assert!(root.get_mut_bookmark(Path::new("/f/b")).is_some());
+    assert!(root.get_mut_bookmark(Path::new("/f/g/c")).is_some());
+    assert!(root.get_mut_bookmark(Path::new("/nope")).is_none());
     // The root itself is the vector, not a node.
-    assert!(root.get_mut_by_path(Path::new("/")).is_none());
+    assert!(root.get_mut_bookmark(Path::new("/")).is_none());
 }
 
 #[test]
 fn test_insert_into_root() {
     let mut root = sample();
 
-    assert!(root.insert_into(Path::new("/"), note("d", "/tmp/d")));
+    assert!(root.insert_bookmark_into(Path::new("/"), note("d", "/tmp/d")));
     assert_eq!(3, root.len());
-    assert!(root.get_mut_by_path(Path::new("/d")).is_some());
+    assert!(root.get_mut_bookmark(Path::new("/d")).is_some());
 }
 
 #[test]
 fn test_insert_into_folder() {
     let mut root = sample();
 
-    assert!(root.insert_into(Path::new("/f"), note("d", "/tmp/d")));
-    assert!(root.get_mut_by_path(Path::new("/f/d")).is_some());
-    assert!(root.get_mut_by_path(Path::new("/f/g/d")).is_none());
+    assert!(root.insert_bookmark_into(Path::new("/f"), note("d", "/tmp/d")));
+    assert!(root.get_mut_bookmark(Path::new("/f/d")).is_some());
+    assert!(root.get_mut_bookmark(Path::new("/f/g/d")).is_none());
 }
 
 #[test]
 fn test_insert_into_missing_folder_fails() {
     let mut root = sample();
 
-    assert!(!root.insert_into(Path::new("/nope"), note("d", "/tmp/d")));
+    assert!(!root.insert_bookmark_into(Path::new("/nope"), note("d", "/tmp/d")));
     assert_eq!(2, root.len());
 }
 
@@ -77,7 +77,7 @@ fn test_insert_into_note_fails() {
     let mut root = sample();
 
     // `/a` is a note, not a folder.
-    assert!(!root.insert_into(Path::new("/a"), note("d", "/tmp/d")));
+    assert!(!root.insert_bookmark_into(Path::new("/a"), note("d", "/tmp/d")));
     assert_eq!(2, root.len());
 }
 
@@ -85,20 +85,20 @@ fn test_insert_into_note_fails() {
 fn test_remove_by_path() {
     let mut root = sample();
 
-    let removed = root.remove_by_path(Path::new("/f/b"));
+    let removed = root.remove_bookmark(Path::new("/f/b"));
     assert!(removed.is_some());
     assert_eq!("b", removed.unwrap().name());
-    assert!(root.get_mut_by_path(Path::new("/f/b")).is_none());
+    assert!(root.get_mut_bookmark(Path::new("/f/b")).is_none());
     // The sibling folder is untouched.
-    assert!(root.get_mut_by_path(Path::new("/f/g/c")).is_some());
+    assert!(root.get_mut_bookmark(Path::new("/f/g/c")).is_some());
 }
 
 #[test]
 fn test_remove_missing() {
     let mut root = sample();
 
-    assert!(root.remove_by_path(Path::new("/nope")).is_none());
-    assert!(root.remove_by_path(Path::new("/")).is_none());
+    assert!(root.remove_bookmark(Path::new("/nope")).is_none());
+    assert!(root.remove_bookmark(Path::new("/")).is_none());
     assert_eq!(2, root.len());
 }
 
@@ -107,8 +107,8 @@ fn test_move_to_folder() {
     let mut root = sample();
 
     assert!(root.move_to_dir(Path::new("/a"), Path::new("/f")));
-    assert!(root.get_mut_by_path(Path::new("/a")).is_none());
-    assert!(root.get_mut_by_path(Path::new("/f/a")).is_some());
+    assert!(root.get_mut_bookmark(Path::new("/a")).is_none());
+    assert!(root.get_mut_bookmark(Path::new("/f/a")).is_some());
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn test_move_into_own_subtree_fails() {
     let mut root = sample();
 
     assert!(!root.move_to_dir(Path::new("/f"), Path::new("/f/g")));
-    assert!(root.get_mut_by_path(Path::new("/f/g/c")).is_some());
+    assert!(root.get_mut_bookmark(Path::new("/f/g/c")).is_some());
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn test_move_onto_itself_fails() {
     let mut root = sample();
 
     assert!(!root.move_to_dir(Path::new("/f"), Path::new("/f")));
-    assert!(root.get_mut_by_path(Path::new("/f/g/c")).is_some());
+    assert!(root.get_mut_bookmark(Path::new("/f/g/c")).is_some());
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn test_move_to_note_fails() {
 
     // `/a` is a note, so the move must not happen and `/f/b` must survive.
     assert!(!root.move_to_dir(Path::new("/f/b"), Path::new("/a")));
-    assert!(root.get_mut_by_path(Path::new("/f/b")).is_some());
+    assert!(root.get_mut_bookmark(Path::new("/f/b")).is_some());
 }
 
 #[test]

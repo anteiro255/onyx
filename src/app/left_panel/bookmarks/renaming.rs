@@ -2,7 +2,10 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::models::{BookmarkFS, BookmarkFSExt};
+use crate::{
+    app::left_panel::bookmarks::action_buffer,
+    models::{BookmarkFS},
+};
 
 pub struct Renaming {
     /// Synthetic path of the bookmark being renamed inline.
@@ -36,16 +39,27 @@ impl Renaming {
         }
         response
     }
-    pub fn commit(self, root: &mut BookmarkFS) {
-        let Some(bookmark_node) = root.get_mut_by_path(self.path.as_path()) else {
-            log::error!(
-                "Can't get the {} bookmark in the bookmarks pseudo fs to rename",
-                self.path
-                    .to_str()
-                    .unwrap_or("<unable to convert the path to a string>")
-            );
-            return;
+    pub fn commit(
+        self,
+        action_buffer: &mut action_buffer::ActionBuffer,
+        bookmark_fs: &mut BookmarkFS,
+    ) {
+        let new_path = {
+            let Some(parent) = self.path.parent() else {
+                log::error!(
+                    "can't get the parent of the path: {}",
+                    self.path.to_string_lossy()
+                );
+                return;
+            };
+            parent.join(self.buf)
         };
-        bookmark_node.set_name(self.buf);
+        action_buffer.do_action(
+            action_buffer::Action::Move {
+                from: self.path,
+                to: new_path,
+            },
+            bookmark_fs,
+        );
     }
 }

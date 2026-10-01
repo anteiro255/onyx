@@ -2,9 +2,12 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::models::{
-    BookmarkNode,
-    bookmark::{self, BookmarkFSExt},
+use crate::{
+    app::left_panel::bookmarks::action_buffer,
+    models::{
+        BookmarkNode,
+        bookmark::{self, BookmarkFSExt},
+    },
 };
 
 pub enum Dialog {
@@ -64,7 +67,12 @@ impl Dialog {
 #[derive(Default)]
 pub struct DialogWindow(pub Option<Dialog>);
 impl DialogWindow {
-    pub fn show(&mut self, ctx: &egui::Context, bookmark_fs: &mut bookmark::BookmarkFS) {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        act_buf: &mut action_buffer::ActionBuffer,
+        bookmark_fs: &mut bookmark::BookmarkFS,
+    ) {
         let Some(dialog) = self.0.as_mut() else {
             return;
         };
@@ -104,12 +112,15 @@ impl DialogWindow {
 
                     ui.horizontal(|ui| {
                         if ui.button("Create").clicked() && !name.trim().is_empty() {
-                            bookmark_fs.insert_into(
-                                bookmark_folder_parent,
-                                bookmark::BookmarkNode::Note {
-                                    note_path: note_path.clone(),
-                                    name: name.clone(),
+                            act_buf.do_action(
+                                action_buffer::Action::Create {
+                                    bookmark: BookmarkNode::Note {
+                                        note_path: note_path.clone(),
+                                        name: name.clone(),
+                                    },
+                                    parent_path: bookmark_folder_parent.clone(),
                                 },
+                                bookmark_fs,
                             );
 
                             completed = true;
@@ -130,12 +141,15 @@ impl DialogWindow {
 
                     ui.horizontal(|ui| {
                         if ui.button("Create").clicked() && !name.trim().is_empty() {
-                            bookmark_fs.insert_into(
-                                bookmark_folder_parent,
-                                BookmarkNode::Folder {
-                                    name: name.clone(),
-                                    content: vec![],
+                            act_buf.do_action(
+                                action_buffer::Action::Create {
+                                    bookmark: BookmarkNode::Folder {
+                                        name: name.clone(),
+                                        content: vec![],
+                                    },
+                                    parent_path: bookmark_folder_parent.clone(),
                                 },
+                                bookmark_fs,
                             );
                             completed = true;
                         }
@@ -162,26 +176,33 @@ impl DialogWindow {
 
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() && !name.trim().is_empty() {
-                            let Some(bookmark) =
-                                bookmark_fs.get_mut_by_path(bookmark_path.as_path())
-                            else {
-                                log::error!("No bookmark at the path");
+                            completed = true;
+
+                            let Some(bmark) = bookmark_fs.get_bookmark(bookmark_path) else {
+                                log::error!(
+                                    "No bookmark at the path=\"{}\"",
+                                    note_path.to_string_lossy()
+                                );
                                 return;
                             };
-
-                            if let BookmarkNode::Note {
-                                note_path: bookmark_note_path,
-                                name: bookmark_name,
-                            } = bookmark
-                            {
-                                *bookmark_note_path = note_path.clone();
-                                *bookmark_name = name.clone();
+                            if bmark.is_note_bookmark() {
+                                act_buf.do_action(
+                                    action_buffer::Action::Edit {
+                                        path: bookmark_path.clone(),
+                                        old: bmark.clone(),
+                                        new: bookmark::BookmarkNode::Note {
+                                            note_path: note_path.clone(),
+                                            name: name.clone(),
+                                        },
+                                    },
+                                    bookmark_fs,
+                                );
                             } else {
-                                log::error!("The bookmark at the path is a folder");
-                                return;
+                                log::error!(
+                                    "The bookmark node at the path=\"{}\" is a folder",
+                                    note_path.to_string_lossy()
+                                );
                             }
-
-                            completed = true;
                         }
                         if ui.button("Cancel").clicked() {
                             completed = true;

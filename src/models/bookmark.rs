@@ -1,3 +1,4 @@
+use eframe::egui::TextBuffer;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
@@ -36,35 +37,44 @@ impl BookmarkNode {
             }
         }
     }
+
+    pub fn is_note_bookmark(&self) -> bool {
+        match self {
+            BookmarkNode::Note { .. } => true,
+            BookmarkNode::Folder { .. } => false,
+        }
+    }
 }
 
 pub trait BookmarkFSExt {
     /// Recursively retrieves a mutable reference to a `Bookmark` by traversing the given relative path.
-    fn get_mut_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode>;
+    fn get_mut_bookmark(&mut self, path: &Path) -> Option<&mut BookmarkNode>;
 
     /// Recursively retrieves a reference to a `Bookmark` by traversing the given relative path.
-    fn get_by_path(&self, path: &Path) -> Option<&BookmarkNode>;
+    fn get_bookmark(&self, path: &Path) -> Option<&BookmarkNode>;
 
     /// Retrieves a mutable reference to the parent `Bookmark` (which must be a `Folder`) for the given path.
-    fn get_mut_parent_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode>;
+    fn get_mut_bookmark_parent(&mut self, path: &Path) -> Option<&mut BookmarkNode>;
 
     /// Retrieves a reference to the parent `Bookmark` (which must be a `Folder`) for the given path.
-    fn get_parent_by_path(&self, path: &Path) -> Option<&BookmarkNode>;
+    fn get_bookmark_parent(&self, path: &Path) -> Option<&BookmarkNode>;
 
     /// Removes and returns the bookmark node at `path`, or `None` if it doesn't exist.
-    fn remove_by_path(&mut self, path: &Path) -> Option<BookmarkNode>;
+    fn remove_bookmark(&mut self, path: &Path) -> Option<BookmarkNode>;
 
     /// Moves the node at `from` into the folder at `to_dir` (the root if `to_dir` is the root path).
     /// Returns `false` if `from` doesn't exist, `to_dir` isn't a folder, or `to_dir` is inside `from`.
-    fn move_to_dir(&mut self, from: &Path, to_dir: &Path) -> bool;
+    fn move_to_dir(&mut self, from: impl AsRef<Path>, to_dir: impl AsRef<Path>) -> bool;
+
+    fn move_bookmark(&mut self, from: &Path, to: &Path) -> bool;
 
     /// Inserts `node` into the folder at `dir` (the root if `dir` is the root path).
     /// Returns `false` if the target folder doesn't exist.
-    fn insert_into(&mut self, dir: &Path, node: BookmarkNode) -> bool;
+    fn insert_bookmark_into(&mut self, dir: &Path, node: BookmarkNode) -> bool;
 }
 
 impl BookmarkFSExt for BookmarkFS {
-    fn get_mut_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode> {
+    fn get_mut_bookmark(&mut self, path: &Path) -> Option<&mut BookmarkNode> {
         let components = components_of(path);
 
         if components.is_empty() {
@@ -91,7 +101,7 @@ impl BookmarkFSExt for BookmarkFS {
         None
     }
 
-    fn get_by_path(&self, path: &Path) -> Option<&BookmarkNode> {
+    fn get_bookmark(&self, path: &Path) -> Option<&BookmarkNode> {
         let components = components_of(path);
 
         if components.is_empty() {
@@ -118,7 +128,7 @@ impl BookmarkFSExt for BookmarkFS {
         None
     }
 
-    fn get_mut_parent_by_path(&mut self, path: &Path) -> Option<&mut BookmarkNode> {
+    fn get_mut_bookmark_parent(&mut self, path: &Path) -> Option<&mut BookmarkNode> {
         let parent_path = path.parent()?;
 
         // If path has no parent component (e.g. "file.txt"), the parent is the root vector itself,
@@ -127,18 +137,18 @@ impl BookmarkFSExt for BookmarkFS {
             return None;
         }
 
-        let parent = self.get_mut_by_path(parent_path)?;
+        let parent = self.get_mut_bookmark(parent_path)?;
         match parent {
             folder @ BookmarkNode::Folder { .. } => Some(folder),
             BookmarkNode::Note { .. } => None,
         }
     }
 
-    fn get_parent_by_path(&self, path: &Path) -> Option<&BookmarkNode> {
+    fn get_bookmark_parent(&self, path: &Path) -> Option<&BookmarkNode> {
         todo!();
     }
 
-    fn remove_by_path(&mut self, path: &Path) -> Option<BookmarkNode> {
+    fn remove_bookmark(&mut self, path: &Path) -> Option<BookmarkNode> {
         let components = components_of(path);
 
         if components.is_empty() {
@@ -164,21 +174,79 @@ impl BookmarkFSExt for BookmarkFS {
         }
         None
     }
-    fn move_to_dir(&mut self, from: &Path, to_dir: &Path) -> bool {
-        if to_dir == from || to_dir.starts_with(from) {
+    fn move_bookmark(&mut self, from: &Path, to: &Path) -> bool {
+        // Prevent moving into own subtree or onto self
+        if to.starts_with(from) {
             return false;
         }
-        // Validate the target folder before removing the source so a failed
-        // move never loses a node.
-        if !is_folder(self, to_dir) {
-            return false;
-        }
-        let Some(node) = self.remove_by_path(from) else {
+
+        // Validate that the target parent exists and is a folder (or root)
+        let Some(to_parent) = to.parent() else {
             return false;
         };
-        self.insert_into(to_dir, node)
+        let parent_components = components_of(to_parent);
+        if !parent_components.is_empty() {
+            let target = self.get_bookmark(to_parent);
+            match target {
+                Some(BookmarkNode::Folder { .. }) => {}
+                _ => return false,
+            }
+        }
+
+        let Some(mut bookmark) = self.remove_bookmark(from) else {
+            return false;
+        };
+        let Some(to_name) = to.file_name() else {
+            return false;
+        };
+        bookmark.set_name(to_name.to_string_lossy().as_str().to_owned());
+
+        if !self.insert_bookmark_into(to_parent, bookmark.clone()) {
+            let original_parent = from.parent().unwrap_or_else(|| Path::new("/"));
+            let Some(original_name) = from.file_name() else {
+                return false;
+            };
+            bookmark.set_name(original_name.to_string_lossy().as_str().to_owned());
+            self.insert_bookmark_into(original_parent, bookmark);
+            false
+        } else {
+            true
+        }
     }
-    fn insert_into(&mut self, dir: &Path, node: BookmarkNode) -> bool {
+
+    fn move_to_dir(&mut self, from: impl AsRef<Path>, to_dir: impl AsRef<Path>) -> bool {
+        let from = from.as_ref();
+        let to_dir = to_dir.as_ref();
+
+        // Prevent moving into own subtree or onto self
+        if to_dir.starts_with(from) {
+            return false;
+        }
+
+        // Validate that the target exists and is a folder (or root)
+        let components = components_of(to_dir);
+        if !components.is_empty() {
+            let target = self.get_bookmark(to_dir);
+            match target {
+                Some(BookmarkNode::Folder { .. }) => {}
+                _ => return false,
+            }
+        }
+
+        let Some(bookmark) = self.remove_bookmark(from) else {
+            return false;
+        };
+
+        if !self.insert_bookmark_into(to_dir, bookmark.clone()) {
+            let original_parent = from.parent().unwrap_or_else(|| Path::new("/"));
+            self.insert_bookmark_into(original_parent, bookmark);
+            false
+        } else {
+            true
+        }
+    }
+
+    fn insert_bookmark_into(&mut self, dir: &Path, node: BookmarkNode) -> bool {
         let mut current = self;
         for segment in components_of(dir) {
             let idx = current.iter().position(|item| item.name() == segment);
@@ -213,7 +281,7 @@ fn is_folder(root: &mut BookmarkFS, path: &Path) -> bool {
     if components_of(path).is_empty() {
         return true;
     }
-    match root.get_mut_by_path(path) {
+    match root.get_mut_bookmark(path) {
         Some(BookmarkNode::Folder { .. }) => true,
         _ => false,
     }

@@ -4,8 +4,8 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum BookmarkNode {
     Note {
-        /// Relative path from the volume root
-        path: PathBuf,
+        /// Real relative path from the volume root
+        note_path: PathBuf,
         name: String,
     },
     Folder {
@@ -56,7 +56,7 @@ pub trait BookmarkFSExt {
 
     /// Moves the node at `from` into the folder at `to_dir` (the root if `to_dir` is the root path).
     /// Returns `false` if `from` doesn't exist, `to_dir` isn't a folder, or `to_dir` is inside `from`.
-    fn move_to(&mut self, from: &Path, to_dir: &Path) -> bool;
+    fn move_to_dir(&mut self, from: &Path, to_dir: &Path) -> bool;
 
     /// Inserts `node` into the folder at `dir` (the root if `dir` is the root path).
     /// Returns `false` if the target folder doesn't exist.
@@ -164,7 +164,7 @@ impl BookmarkFSExt for BookmarkFS {
         }
         None
     }
-    fn move_to(&mut self, from: &Path, to_dir: &Path) -> bool {
+    fn move_to_dir(&mut self, from: &Path, to_dir: &Path) -> bool {
         if to_dir == from || to_dir.starts_with(from) {
             return false;
         }

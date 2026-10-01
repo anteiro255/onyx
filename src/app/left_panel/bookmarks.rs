@@ -10,6 +10,7 @@ use crate::{
 };
 
 mod action_buffer;
+mod dialog;
 mod renaming;
 
 /// A context-menu click, applied after the tree view has finished rendering.
@@ -20,9 +21,7 @@ enum ContextMenuAction {
     Edit(PathBuf),
     Rename(PathBuf),
     Delete(PathBuf),
-    /// Create a note bookmark inside the folder at this (synthetic) path.
     AddBookmark(PathBuf),
-    /// Create a folder bookmark inside the folder at this (synthetic) path.
     CreateFolder(PathBuf),
 }
 
@@ -32,57 +31,12 @@ enum CreateKind {
     Folder,
 }
 
-/// State of the "create bookmark" dialog.
-struct CreateDialog {
-    kind: CreateKind,
-    name: String,
-
-    /// Synthetic bookmarks pseudo fs path of the folder the new bookmark is added into.
-    parent_path: PathBuf,
-    /// The real path of the note file (only used for [`CreateKind::Note`]).
-    path: String,
-
-    /// Synthetic path of the note being edited, if this dialog edits an existing note.
-    editing: Option<PathBuf>,
-}
-impl CreateDialog {
-    fn note(parent_path: PathBuf) -> Self {
-        Self {
-            kind: CreateKind::Note,
-            parent_path,
-            name: String::new(),
-            path: String::new(),
-            editing: None,
-        }
-    }
-    fn folder(parent_path: PathBuf) -> Self {
-        Self {
-            kind: CreateKind::Folder,
-            parent_path,
-            name: String::new(),
-            path: String::new(),
-            editing: None,
-        }
-    }
-    /// A dialog that edits the note at the synthetic `path` instead of creating a new one.
-    fn edit_note(path: PathBuf, name: String, note_path: String) -> Self {
-        Self {
-            kind: CreateKind::Note,
-            parent_path: path.parent().map(|p| p.to_path_buf()).unwrap_or_default(),
-            name,
-            path: note_path,
-            editing: Some(path),
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct Bookmarks {
     /// Synthetic path pending a delete confirmation dialog.
     confirm_delete: Option<PathBuf>,
     renaming: Option<renaming::Renaming>,
-    /// State of the create dialog, if open.
-    create: Option<CreateDialog>,
+    dialog: dialog::DialogWindow,
 
     action_buffer: action_buffer::ActionBuffer,
 
@@ -130,7 +84,7 @@ impl Bookmarks {
             renaming.commit(&mut state.storage.bookmarks);
         }
         self.show_delete_confirmation(ui.ctx(), &mut state.storage.bookmarks);
-        self.show_create_dialog(ui.ctx(), &mut state.storage.bookmarks);
+        self.dialog.show(ui.ctx(), &mut state.storage.bookmarks);
         self.handle_shortcuts(ui, tree_id);
     }
 
@@ -261,86 +215,6 @@ impl Bookmarks {
         }
     }
 
-    /// Render the create bookmark dialog. Enter confirms, Esc cancels.
-    fn show_create_dialog(&mut self, ctx: &egui::Context, bookmarks: &mut Vec<BookmarkNode>) {
-        let Some(create) = self.create.take() else {
-            return;
-        };
-        let title = if create.editing.is_some() {
-            "Edit bookmark"
-        } else {
-            match &create.kind {
-                CreateKind::Note => "Add a bookmark",
-                CreateKind::Folder => "Create a folder",
-            }
-        };
-        let mut create = Some(create);
-        let mut open = true;
-        let mut completed = false;
-        egui::Window::new(title)
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                let Some(create) = create.as_mut() else {
-                    return;
-                };
-                match create.kind {
-                    CreateKind::Note => {
-                        ui.label("Path to note:");
-                        ui.add(egui::TextEdit::singleline(&mut create.path).desired_width(300.0));
-                        ui.label("Name:");
-                        ui.add(egui::TextEdit::singleline(&mut create.name).desired_width(300.0));
-                    }
-                    CreateKind::Folder => {
-                        ui.label("Folder name:");
-                        ui.add(egui::TextEdit::singleline(&mut create.name).desired_width(300.0));
-                    }
-                }
-                ui.horizontal(|ui| {
-                    let is_editing = create.editing.is_some();
-                    let ok_response = ui.button(match is_editing {
-                        true => "Save",
-                        false => "Create",
-                    });
-                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if ok_response.clicked() || enter {
-                        let name = create.name.trim().to_string();
-                        if !name.is_empty() {
-                            if let Some(editing) = create.editing.as_ref() {
-                                let path = create.path.trim().to_string();
-                                if !path.is_empty() {
-                                    update_note(bookmarks, editing.as_path(), &name, &path);
-                                }
-                            } else {
-                                match create.kind {
-                                    CreateKind::Note => {
-                                        let path = create.path.trim().to_string();
-                                        if !path.is_empty() {
-                                            add_note(bookmarks, &create.parent_path, &name, &path);
-                                        }
-                                    }
-                                    CreateKind::Folder => {
-                                        add_folder(bookmarks, &create.parent_path, &name);
-                                    }
-                                }
-                            }
-                        }
-                        completed = true;
-                    }
-                    let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                    if ui.button("Cancel").clicked() || escape {
-                        completed = true;
-                    }
-                });
-            });
-
-        if open && !completed {
-            self.create = create;
-        }
-    }
-
     /// Apply the context-menu action that was deferred while the tree view rendered.
     fn handle_menu_actions(
         &mut self,
@@ -350,20 +224,17 @@ impl Bookmarks {
         if let Some(action) = &*actions.borrow() {
             match action {
                 ContextMenuAction::Open(path) => self.open(bookmarks_root, path),
-                ContextMenuAction::Edit(path) => {
-                    let Some(note) = bookmarks_root.get_by_path(path.as_path()) else {
+                ContextMenuAction::Edit(bookmark_path) => {
+                    let Some(note) = bookmarks_root.get_by_path(bookmark_path.as_path()) else {
                         return;
                     };
                     match note {
-                        BookmarkNode::Note {
-                            path: note_path,
-                            name,
-                        } => {
-                            self.create = Some(CreateDialog::edit_note(
-                                path.clone(),
+                        BookmarkNode::Note { note_path, name } => {
+                            self.dialog = dialog::DialogWindow(Some(dialog::Dialog::edit_note(
+                                bookmark_path.clone(),
                                 name.clone(),
-                                note_path.to_string_lossy().into_owned(),
-                            ));
+                                note_path.clone(),
+                            )));
                         }
                         BookmarkNode::Folder { .. } => {}
                     }
@@ -373,10 +244,12 @@ impl Bookmarks {
                 }
                 ContextMenuAction::Delete(path) => self.confirm_delete = Some(path.clone()),
                 ContextMenuAction::AddBookmark(parent) => {
-                    self.create = Some(CreateDialog::note(parent.clone()));
+                    self.dialog =
+                        dialog::DialogWindow(Some(dialog::Dialog::create_note(parent.clone())));
                 }
                 ContextMenuAction::CreateFolder(parent) => {
-                    self.create = Some(CreateDialog::folder(parent.clone()));
+                    self.dialog =
+                        dialog::DialogWindow(Some(dialog::Dialog::create_folder(parent.clone())));
                 }
             }
         }
@@ -437,7 +310,9 @@ impl Bookmarks {
     /// Open a bookmark by pseudo bookmark fs path
     fn open(&mut self, bookmarks_root: &BookmarkFS, bookmark_path: &Path) {
         let file_path = match bookmarks_root.get_by_path(bookmark_path) {
-            Some(BookmarkNode::Note { path, .. }) => path,
+            Some(BookmarkNode::Note {
+                note_path: path, ..
+            }) => path,
             _ => {
                 log::error!(
                     "There's non a bookmark with bookmark fs path={}",
@@ -523,7 +398,7 @@ fn move_dropped(bookmarks: &mut BookmarkFS, dnd: &DragAndDrop<PathBuf>) {
 /// Move a set of nodes into `target_dir`.
 fn move_to_dir(bookmarks: &mut BookmarkFS, source: &Vec<PathBuf>, target_dir: &Path) {
     for src in source {
-        let _ = bookmarks.move_to(src.as_path(), target_dir);
+        let _ = bookmarks.move_to_dir(src.as_path(), target_dir);
     }
 }
 
@@ -533,7 +408,7 @@ fn add_note(root: &mut BookmarkFS, parent: &Path, name: &String, path: &String) 
         root,
         parent,
         BookmarkNode::Note {
-            path: PathBuf::from(path.as_str()),
+            note_path: PathBuf::from(path.as_str()),
             name: name.clone(),
         },
     );
@@ -559,7 +434,7 @@ fn update_note(bookmarks: &mut BookmarkFS, path: &Path, name: &String, note_path
     };
     match note {
         BookmarkNode::Note {
-            path,
+            note_path: path,
             name: note_name,
         } => {
             *path = PathBuf::from(note_path.as_str());

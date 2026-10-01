@@ -4,7 +4,7 @@ use onyx::models::{BookmarkFS, BookmarkFSExt, BookmarkNode};
 
 fn note(name: &str, path: &str) -> BookmarkNode {
     BookmarkNode::Note {
-        path: PathBuf::from(path),
+        note_path: PathBuf::from(path),
         name: String::from(name),
     }
 }
@@ -106,7 +106,7 @@ fn test_remove_missing() {
 fn test_move_to_folder() {
     let mut root = sample();
 
-    assert!(root.move_to(Path::new("/a"), Path::new("/f")));
+    assert!(root.move_to_dir(Path::new("/a"), Path::new("/f")));
     assert!(root.get_mut_by_path(Path::new("/a")).is_none());
     assert!(root.get_mut_by_path(Path::new("/f/a")).is_some());
 }
@@ -115,7 +115,7 @@ fn test_move_to_folder() {
 fn test_move_into_own_subtree_fails() {
     let mut root = sample();
 
-    assert!(!root.move_to(Path::new("/f"), Path::new("/f/g")));
+    assert!(!root.move_to_dir(Path::new("/f"), Path::new("/f/g")));
     assert!(root.get_mut_by_path(Path::new("/f/g/c")).is_some());
 }
 
@@ -123,7 +123,7 @@ fn test_move_into_own_subtree_fails() {
 fn test_move_onto_itself_fails() {
     let mut root = sample();
 
-    assert!(!root.move_to(Path::new("/f"), Path::new("/f")));
+    assert!(!root.move_to_dir(Path::new("/f"), Path::new("/f")));
     assert!(root.get_mut_by_path(Path::new("/f/g/c")).is_some());
 }
 
@@ -132,7 +132,7 @@ fn test_move_to_note_fails() {
     let mut root = sample();
 
     // `/a` is a note, so the move must not happen and `/f/b` must survive.
-    assert!(!root.move_to(Path::new("/f/b"), Path::new("/a")));
+    assert!(!root.move_to_dir(Path::new("/f/b"), Path::new("/a")));
     assert!(root.get_mut_by_path(Path::new("/f/b")).is_some());
 }
 
@@ -140,6 +140,6 @@ fn test_move_to_note_fails() {
 fn test_move_missing_source_fails() {
     let mut root = sample();
 
-    assert!(!root.move_to(Path::new("/nope"), Path::new("/f")));
+    assert!(!root.move_to_dir(Path::new("/nope"), Path::new("/f")));
     assert_eq!(2, root.len());
 }

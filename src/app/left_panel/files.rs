@@ -578,21 +578,6 @@ fn delete_permanent(path: &Path) {
     }
 }
 
-/// Find a free `base`, `base_1`, `base_2`, ... path in `trash`.
-fn unique_trash_path(trash: &Path, base: &str) -> PathBuf {
-    let candidate = trash.join(base);
-    if !candidate.exists() {
-        return candidate;
-    }
-    for i in 1.. {
-        let candidate = trash.join(format!("{}_{}", base, i));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    unreachable!()
-}
-
 /// Recursively copy a file or directory from `src` to `dest`.
 ///
 /// Returns `false` (aborting the copy) if `dest` is inside `src`, which would

@@ -20,9 +20,9 @@
 
 - [ ] Add Ctrl+X, Ctrl+C, Ctrl+V support(may be excess)
 - [ ] Use HashSets instead of Vectors for bookmark folders
-- [ ] Refactor `models/bookmark.rs`:
-  - [ ] Implement error types
-  - [ ] Make `BookmarkFS` a struct instead of an alias with BookmarkFS
+- [x] Refactor `models/bookmark.rs`:
+  - [x] Implement error types
+  - [x] Make `BookmarkFs` a struct instead of an alias with `BookmarkFsExt`
 
 ### General
 

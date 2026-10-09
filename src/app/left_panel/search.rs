@@ -3,5 +3,5 @@ use eframe::egui;
 #[derive(Default)]
 pub struct Search {}
 impl Search {
-    pub fn ui(&mut self, ui: &mut egui::Ui) {}
+    pub fn ui(&mut self, _ui: &mut egui::Ui) {}
 }

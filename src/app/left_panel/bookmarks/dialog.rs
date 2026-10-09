@@ -2,13 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::{
-    app::left_panel::bookmarks::action_buffer,
-    models::{
-        BookmarkNode,
-        bookmark::{self, BookmarkFSExt},
-    },
-};
+use crate::{app::left_panel::bookmarks::action_buffer, models::bookmark};
 
 pub enum Dialog {
     CreateNote {
@@ -54,14 +48,6 @@ impl Dialog {
             note_path,
         }
     }
-
-    pub fn name(&self) -> &str {
-        match self {
-            Dialog::CreateNote { name, .. } => name,
-            Dialog::CreateFolder { name, .. } => name,
-            Dialog::EditNote { name, .. } => name,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -71,7 +57,7 @@ impl DialogWindow {
         &mut self,
         ctx: &egui::Context,
         act_buf: &mut action_buffer::ActionBuffer,
-        bookmark_fs: &mut bookmark::BookmarkFS,
+        bookmark_fs: &mut bookmark::BookmarkFs,
     ) {
         let Some(dialog) = self.0.as_mut() else {
             return;
@@ -114,7 +100,7 @@ impl DialogWindow {
                         if ui.button("Create").clicked() && !name.trim().is_empty() {
                             act_buf.do_action(
                                 action_buffer::Action::Create {
-                                    bookmark: BookmarkNode::Note {
+                                    node: bookmark::BookmarkNode::Bookmark {
                                         note_path: note_path.clone(),
                                         name: name.clone(),
                                     },
@@ -143,9 +129,9 @@ impl DialogWindow {
                         if ui.button("Create").clicked() && !name.trim().is_empty() {
                             act_buf.do_action(
                                 action_buffer::Action::Create {
-                                    bookmark: BookmarkNode::Folder {
+                                    node: bookmark::BookmarkNode::Folder {
                                         name: name.clone(),
-                                        content: vec![],
+                                        content: bookmark::BookmarkFs::from(vec![]),
                                     },
                                     parent_path: bookmark_folder_parent.clone(),
                                 },
@@ -178,19 +164,19 @@ impl DialogWindow {
                         if ui.button("Save").clicked() && !name.trim().is_empty() {
                             completed = true;
 
-                            let Some(bmark) = bookmark_fs.get_bookmark(bookmark_path) else {
-                                log::error!(
-                                    "No bookmark at the path=\"{}\"",
-                                    note_path.to_string_lossy()
-                                );
-                                return;
+                            let node = match bookmark_fs.get_node(bookmark_path) {
+                                Ok(node) => node,
+                                Err(err) => {
+                                    log::error!("{}", err);
+                                    return;
+                                }
                             };
-                            if bmark.is_note_bookmark() {
+                            if node.is_bookmark() {
                                 act_buf.do_action(
                                     action_buffer::Action::Edit {
                                         path: bookmark_path.clone(),
-                                        old: bmark.clone(),
-                                        new: bookmark::BookmarkNode::Note {
+                                        old: node.clone(),
+                                        new: bookmark::BookmarkNode::Bookmark {
                                             note_path: note_path.clone(),
                                             name: name.clone(),
                                         },

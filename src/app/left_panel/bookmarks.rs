@@ -5,10 +5,7 @@ use eframe::egui;
 use egui_ltreeview::{DirPosition, NodeBuilder, TreeView, TreeViewBuilder};
 
 use crate::constants;
-use crate::{
-    app::AppState,
-    models::{BookmarkFS, BookmarkFSExt, BookmarkNode},
-};
+use crate::{app::AppState, models::bookmark};
 
 mod action_buffer;
 mod dialog;
@@ -61,7 +58,7 @@ impl Bookmarks {
                         root_context_menu(ui, &menu_actions);
                     })
                     .show(ui, |builder| {
-                        for bookmark in &state.storage.bookmarks {
+                        for bookmark in &state.storage.bookmark_fs_root {
                             self.draw_bookmark(
                                 builder,
                                 &bookmark,
@@ -70,33 +67,33 @@ impl Bookmarks {
                             );
                         }
                     });
-                self.handle_actions(&mut state.storage.bookmarks, actions);
-                self.handle_menu_actions(&mut state.storage.bookmarks, &menu_actions);
+                self.handle_actions(&mut state.storage.bookmark_fs_root, actions);
+                self.handle_menu_actions(&mut state.storage.bookmark_fs_root, &menu_actions);
             });
         if self.renaming.as_ref().is_some_and(|r| r.is_to_commit)
             && let Some(renaming) = self.renaming.take()
         {
-            renaming.commit(&mut self.action_buffer, &mut state.storage.bookmarks);
+            renaming.commit(&mut self.action_buffer, &mut state.storage.bookmark_fs_root);
         }
-        self.show_delete_confirmation(ui.ctx(), &mut state.storage.bookmarks);
+        self.show_delete_confirmation(ui.ctx(), &mut state.storage.bookmark_fs_root);
         self.dialog.show(
             ui.ctx(),
             &mut self.action_buffer,
-            &mut state.storage.bookmarks,
+            &mut state.storage.bookmark_fs_root,
         );
-        self.handle_shortcuts(ui, tree_id, &mut state.storage.bookmarks);
+        self.handle_shortcuts(ui, tree_id, &mut state.storage.bookmark_fs_root);
     }
 
     fn draw_bookmark(
         &mut self,
         builder: &mut TreeViewBuilder<'_, PathBuf>,
-        bookmark: &BookmarkNode,
+        bookmark: &bookmark::BookmarkNode,
         parent_bookmark_fs_path: impl AsRef<Path>,
         menu_actions: &RefCell<Option<ContextMenuAction>>,
     ) {
         let parent_bookmark_fs_path = parent_bookmark_fs_path.as_ref();
         match bookmark {
-            BookmarkNode::Note { name, .. } => {
+            bookmark::BookmarkNode::Bookmark { name, .. } => {
                 let current_bookmark_fs_path = parent_bookmark_fs_path.join(name);
                 builder.node(
                     NodeBuilder::leaf(current_bookmark_fs_path.clone())
@@ -116,7 +113,7 @@ impl Bookmarks {
                         }),
                 );
             }
-            BookmarkNode::Folder { name, content } => {
+            bookmark::BookmarkNode::Folder { name, content } => {
                 let current_bookmark_fs_path = parent_bookmark_fs_path.join(name);
                 let is_open = builder.node(
                     NodeBuilder::dir(current_bookmark_fs_path.clone())
@@ -178,7 +175,11 @@ impl Bookmarks {
         }
     }
     /// Render the delete confirmation dialog. Enter confirms, Esc cancels.
-    fn show_delete_confirmation(&mut self, ctx: &egui::Context, bookmarks: &mut Vec<BookmarkNode>) {
+    fn show_delete_confirmation(
+        &mut self,
+        ctx: &egui::Context,
+        bookmark_fs_root: &mut bookmark::BookmarkFs,
+    ) {
         let Some(path) = self.confirm_delete.take() else {
             return;
         };
@@ -200,7 +201,9 @@ impl Bookmarks {
 
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if delete_response.clicked() || enter {
-                        bookmarks.remove_bookmark(path.as_path());
+                        if let Err(err) = bookmark_fs_root.remove_node(path.as_path()) {
+                            err.log();
+                        };
                         completed = true;
                     }
                     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
@@ -218,25 +221,29 @@ impl Bookmarks {
     /// Apply the context-menu action that was deferred while the tree view rendered.
     fn handle_menu_actions(
         &mut self,
-        bookmarks_root: &mut BookmarkFS,
+        bookmarks_root: &mut bookmark::BookmarkFs,
         actions: &RefCell<Option<ContextMenuAction>>,
     ) {
         if let Some(action) = &*actions.borrow() {
             match action {
                 ContextMenuAction::Open(path) => self.open(bookmarks_root, path),
                 ContextMenuAction::Edit(bookmark_path) => {
-                    let Some(note) = bookmarks_root.get_bookmark(bookmark_path.as_path()) else {
-                        return;
+                    let node = match bookmarks_root.get_node(bookmark_path.as_path()) {
+                        Ok(node) => node,
+                        Err(err) => {
+                            err.log();
+                            return;
+                        }
                     };
-                    match note {
-                        BookmarkNode::Note { note_path, name } => {
+                    match node {
+                        bookmark::BookmarkNode::Bookmark { note_path, name } => {
                             self.dialog = dialog::DialogWindow(Some(dialog::Dialog::edit_note(
                                 bookmark_path.clone(),
                                 name.clone(),
                                 note_path.clone(),
                             )));
                         }
-                        BookmarkNode::Folder { .. } => {}
+                        bookmark::BookmarkNode::Folder { .. } => {}
                     }
                 }
                 ContextMenuAction::Rename(path) => {
@@ -261,7 +268,7 @@ impl Bookmarks {
         &mut self,
         ui: &mut egui::Ui,
         tree_id: egui::Id,
-        bookmark_fs: &mut BookmarkFS,
+        bookmark_fs: &mut bookmark::BookmarkFs,
     ) {
         if self.confirm_delete.is_some() {
             return;
@@ -290,7 +297,7 @@ impl Bookmarks {
 
     fn handle_actions(
         &mut self,
-        bookmark_fs_root: &mut BookmarkFS,
+        bookmark_fs_root: &mut bookmark::BookmarkFs,
         actions: Vec<egui_ltreeview::Action<PathBuf>>,
     ) {
         for action in actions {
@@ -325,7 +332,7 @@ impl Bookmarks {
 
     fn move_bookmarks_to(
         &mut self,
-        bookmark_fs_root: &mut BookmarkFS,
+        bookmark_fs_root: &mut bookmark::BookmarkFs,
         bookmarks: Vec<PathBuf>,
         to_dir: impl AsRef<Path>,
     ) {
@@ -352,22 +359,24 @@ impl Bookmarks {
     }
 
     /// Open a bookmark by pseudo bookmark fs path
-    fn open(&mut self, bookmarks_root: &BookmarkFS, bookmark_path: &Path) {
-        let file_path = match bookmarks_root.get_bookmark(bookmark_path) {
-            Some(BookmarkNode::Note {
+    fn open(&mut self, bookmarks_root: &bookmark::BookmarkFs, bookmark_node_path: &Path) {
+        let file_path = match bookmarks_root.get_node(bookmark_node_path) {
+            Ok(bookmark::BookmarkNode::Bookmark {
                 note_path: path, ..
             }) => path,
-            _ => {
+            Ok(bookmark::BookmarkNode::Folder { .. }) => {
                 log::error!(
-                    "There's non a bookmark with bookmark fs path={}",
-                    bookmark_path
-                        .to_str()
-                        .unwrap_or("<cannot the path convert to a string>")
+                    "Can't open a bookmark folder. path={}",
+                    bookmark_node_path.display()
                 );
                 return;
             }
+            Err(err) => {
+                err.log();
+                return;
+            }
         };
-        if bookmark_path
+        if bookmark_node_path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
         {

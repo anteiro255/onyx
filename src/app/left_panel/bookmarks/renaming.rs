@@ -2,10 +2,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::{
-    app::left_panel::bookmarks::action_buffer,
-    models::{BookmarkFS},
-};
+use crate::{app::left_panel::bookmarks::action_buffer, models::bookmark};
 
 pub struct Renaming {
     /// Synthetic path of the bookmark being renamed inline.
@@ -42,7 +39,7 @@ impl Renaming {
     pub fn commit(
         self,
         action_buffer: &mut action_buffer::ActionBuffer,
-        bookmark_fs: &mut BookmarkFS,
+        bookmark_fs: &mut bookmark::BookmarkFs,
     ) {
         let new_path = {
             let Some(parent) = self.path.parent() else {

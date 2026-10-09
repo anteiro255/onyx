@@ -1,14 +1,11 @@
 use std::path::PathBuf;
 
-use crate::models::{
-    BookmarkFS,
-    bookmark::{self, BookmarkFSExt},
-};
+use crate::models::bookmark;
 
 #[derive(Clone)]
 pub enum Action {
     Create {
-        bookmark: bookmark::BookmarkNode,
+        node: bookmark::BookmarkNode,
         parent_path: PathBuf,
     },
     Move {
@@ -16,7 +13,7 @@ pub enum Action {
         to: PathBuf,
     },
     Delete {
-        bookmark: bookmark::BookmarkNode,
+        node: bookmark::BookmarkNode,
         parent_path: PathBuf,
     },
     Edit {
@@ -31,17 +28,17 @@ impl Action {
     fn anti_action(self) -> Self {
         match self {
             Self::Create {
-                bookmark,
+                node: bookmark,
                 parent_path,
             } => Self::Delete {
-                bookmark,
+                node: bookmark,
                 parent_path,
             },
             Self::Delete {
-                bookmark,
+                node: bookmark,
                 parent_path,
             } => Self::Create {
-                bookmark,
+                node: bookmark,
                 parent_path,
             },
             Self::Move { from, to } => Self::Move { from: to, to: from },
@@ -52,28 +49,45 @@ impl Action {
             },
         }
     }
-    fn perform(&self, bookmark_fs: &mut bookmark::BookmarkFS) -> bool {
+    fn perform(&self, bookmark_fs: &mut bookmark::BookmarkFs) -> Result<(), PerformError> {
         match self {
-            Self::Delete {
-                parent_path,
-                bookmark,
-            } => bookmark_fs
-                .remove_bookmark(parent_path.join(bookmark.name()).as_path())
-                .is_some(),
-            Self::Move { from, to } => bookmark_fs.move_bookmark(from.as_path(), to.as_path()),
-            Self::Create {
-                bookmark,
-                parent_path,
-            } => bookmark_fs.insert_bookmark_into(parent_path.as_path(), bookmark.clone()),
-            Self::Edit { path, new, .. } => {
-                let Some(bookmark) = bookmark_fs.get_mut_bookmark(path.as_path()) else {
-                    log::error!("No bookmark at the path=\"{}\"", path.to_string_lossy());
-                    return false;
-                };
-
-                *bookmark = new.clone();
-                true
+            Self::Delete { parent_path, node } => {
+                match bookmark_fs.remove_node(parent_path.join(node.name()).as_path()) {
+                    Ok(_) => Ok(()),
+                    Err(err) => Err(PerformError::Delete {
+                        parent: parent_path.clone(),
+                        node: node.clone(),
+                        err,
+                    }),
+                }
             }
+            Self::Move { from, to } => {
+                match bookmark_fs.move_bookmark(from.as_path(), to.as_path()) {
+                    Ok(_) => Ok(()),
+                    Err(err) => Err(PerformError::Move {
+                        from: from.clone(),
+                        to: to.clone(),
+                        err,
+                    }),
+                }
+            }
+            Self::Create { node, parent_path } => {
+                match bookmark_fs.insert_node_into(node.clone(), parent_path.as_path()) {
+                    Ok(_) => Ok(()),
+                    Err(err) => Err(PerformError::Create {
+                        err,
+                        parent_path: parent_path.clone(),
+                        node: node.clone(),
+                    }),
+                }
+            }
+            Self::Edit { path, .. } => match bookmark_fs.get_mut_node(path.as_path()) {
+                Ok(_) => Ok(()),
+                Err(err) => Err(PerformError::Edit {
+                    err,
+                    path: path.clone(),
+                }),
+            },
         }
     }
 }
@@ -90,12 +104,8 @@ pub struct ActionBuffer {
 }
 
 impl ActionBuffer {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn do_action(&mut self, action: Action, bookmark_fs: &mut BookmarkFS) {
-        if action.perform(bookmark_fs) {
+    pub fn do_action(&mut self, action: Action, bookmark_fs: &mut bookmark::BookmarkFs) {
+        if action.perform(bookmark_fs).is_ok() {
             self.register_action(action);
         }
     }
@@ -108,36 +118,68 @@ impl ActionBuffer {
     }
 
     /// Reverse the most recent action, if any.
-    pub fn undo(&mut self, bookmark_fs: &mut bookmark::BookmarkFS) {
+    pub fn undo(&mut self, bookmark_fs: &mut bookmark::BookmarkFs) {
         let Some(undo_action) = self.undo_stack.pop() else {
             return;
         };
 
         let redo_action = undo_action.clone().anti_action();
 
-        undo_action.perform(bookmark_fs);
+        if let Err(err) = undo_action.perform(bookmark_fs) {
+            err.log();
+        }
         self.redo_stack.push(redo_action);
     }
 
     /// Re-apply the most recently undone action, if any.
-    pub fn redo(&mut self, bookmark_fs: &mut bookmark::BookmarkFS) {
+    pub fn redo(&mut self, bookmark_fs: &mut bookmark::BookmarkFs) {
         let Some(redo_action) = self.redo_stack.pop() else {
             return;
         };
 
         let undo_action = redo_action.clone().anti_action();
 
-        redo_action.perform(bookmark_fs);
+        if let Err(err) = redo_action.perform(bookmark_fs) {
+            err.log();
+        }
         self.undo_stack.push(undo_action);
     }
+}
+#[derive(thiserror::Error, Debug)]
+pub enum PerformError {
+    #[error("can't move from \"{}\" to \"{}\"", from.display(), to.display())]
+    Move {
+        from: PathBuf,
+        to: PathBuf,
+        #[source]
+        err: bookmark::BookmarkFsError,
+    },
 
-    /// Whether there is anything to undo.
-    pub fn can_undo(&self) -> bool {
-        !self.undo_stack.is_empty()
-    }
+    #[error("can't create \"{}\" in \"{}\"", node.fs_name(), parent_path.display())]
+    Create {
+        parent_path: PathBuf,
+        node: bookmark::BookmarkNode,
+        #[source]
+        err: bookmark::BookmarkFsError,
+    },
 
-    /// Whether there is anything to redo.
-    pub fn can_redo(&self) -> bool {
-        !self.redo_stack.is_empty()
+    #[error("can't delete \"{}\" from \"{}\"", node.fs_name(), parent.display())]
+    Delete {
+        parent: PathBuf,
+        node: bookmark::BookmarkNode,
+        #[source]
+        err: bookmark::BookmarkFsError,
+    },
+
+    #[error("can't edit \"{}\"", path.display())]
+    Edit {
+        path: PathBuf,
+        #[source]
+        err: bookmark::BookmarkFsError,
+    },
+}
+impl PerformError {
+    pub fn log(self) {
+        log::error!("{}", self);
     }
 }
